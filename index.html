@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>uvtest1 — Full UV-style proxy</title>
+  <style>
+    body{font-family:system-ui,Segoe UI,Roboto,Inter,Arial;padding:18px;max-width:980px;margin:auto}
+    input,button,select,textarea{font-size:1rem;padding:8px;margin:6px 0;width:100%}
+    iframe{width:100%;height:640px;border:1px solid #ddd;margin-top:12px}
+    .row{display:flex;gap:8px}
+    .col{flex:1}
+    label{font-weight:600;margin-top:6px;display:block}
+    pre{background:#fafafa;border:1px solid #eee;padding:8px;white-space:pre-wrap}
+    .note{color:#555;font-size:0.95rem}
+  </style>
+</head>
+<body>
+  <h1>uvtest1 — Full UV-style proxy</h1>
+  <p class="note">This demo bundles a full-featured UV-like service-worker proxy. Serve over http://localhost or HTTPS. Service workers will not register on file://.</p>
+
+  <label for="target">Target URL</label>
+  <input id="target" placeholder="https://example.com" value="https://example.com" />
+
+  <div class="row">
+    <div class="col">
+      <label for="method">HTTP Method</label>
+      <select id="method">
+        <option>GET</option>
+        <option>POST</option>
+        <option>PUT</option>
+        <option>DELETE</option>
+      </select>
+    </div>
+    <div class="col">
+      <label for="follow">Redirects</label>
+      <select id="follow">
+        <option value="follow">Follow</option>
+        <option value="manual">Manual (returns redirect)</option>
+      </select>
+    </div>
+  </div>
+
+  <label for="body">Request body (for POST/PUT) — raw text</label>
+  <textarea id="body" rows="6" placeholder='{"hello":"world"}'></textarea>
+
+  <div class="row">
+    <button id="open">Open proxied page in iframe</button>
+    <button id="fetch">Fetch via proxy and show response</button>
+    <button id="clear">Clear output</button>
+  </div>
+
+  <div id="info" class="note"></div>
+
+  <iframe id="frame" title="proxied content" style="display:none"></iframe>
+
+  <h3>Response / Debug output</h3>
+  <pre id="out">(output will appear here)</pre>
+
+<script src="./uv.config.js"></script>
+<script>
+/* index.html - UI hooks and SW registration */
+const out = document.getElementById('out');
+const info = document.getElementById('info');
+const frame = document.getElementById('frame');
+
+async function registerSW() {
+  if (!('serviceWorker' in navigator)) {
+    info.textContent = 'Service Worker not supported.';
+    return;
+  }
+  try {
+    const swFile = (typeof __uv$config !== 'undefined' && __uv$config.sw) ? __uv$config.sw : 'uv.sw.js';
+    const reg = await navigator.serviceWorker.register(swFile);
+    info.textContent = `Service worker registered (scope: ${reg.scope}).`;
+    // wait until controlling
+    if (!navigator.serviceWorker.controller) {
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        info.textContent = 'Service worker took control.';
+      });
+    }
+  } catch (e) {
+    info.textContent = 'SW registration failed: ' + e.message;
+    console.error(e);
+  }
+}
+
+function getConfig() {
+  return (typeof __uv$config !== 'undefined') ? __uv$config : {
+    prefix: '/uv/',
+    encodeUrl: u => btoa(encodeURIComponent(u)),
+    decodeUrl: s => decodeURIComponent(atob(s)),
+    followRedirect: true
+  };
+}
+
+function buildProxyPath(target) {
+  const cfg = getConfig();
+  const enc = cfg.encodeUrl(target);
+  // Accept either prefix + encoded OR prefix?u=encoded, but we'll use path style
+  return cfg.prefix + enc;
+}
+
+document.getElementById('open').addEventListener('click', () => {
+  const target = document.getElementById('target').value.trim();
+  if (!target) { out.textContent = 'Enter a target URL'; return; }
+  const prox = buildProxyPath(target);
+  frame.style.display = '';
+  frame.src = prox;
+  out.textContent = `Iframe opened at: ${prox}`;
+});
+
+document.getElementById('fetch').addEventListener('click', async () => {
+  const target = document.getElementById('target').value.trim();
+  const method = document.getElementById('method').value;
+  const follow = document.getElementById('follow').value;
+  const body = document.getElementById('body').value;
+  if (!target) { out.textContent = 'Enter a target URL'; return; }
+  const cfg = getConfig();
+  let prox = cfg.prefix + cfg.encodeUrl(target);
+  // Add method & config as headers on a special path? We instead use a POST to the proxy endpoint when method !== GET
+  try {
+    out.textContent = `Requesting ${method} ${target} via ${prox}\n\n`;
+    let res;
+    if (method === 'GET' || method === 'DELETE') {
+      res = await fetch(prox, { method, redirect: follow });
+    } else {
+      // send a small JSON wrapper to tell the SW to forward method/body
+      res = await fetch(prox, {
+        method: 'POST',
+        headers: { 'X-UV-Proxy-Method': method, 'Content-Type': 'application/octet-stream' },
+        body: new TextEncoder().encode(body || '')
+      });
+    }
+    out.textContent += `HTTP ${res.status} ${res.statusText}\n`;
+    const ct = (res.headers.get('content-type') || '').toLowerCase();
+    out.textContent += 'Response headers:\n';
+    for (const [k,v] of res.headers.entries()) out.textContent += `${k}: ${v}\n`;
+    out.textContent += '\nBody preview:\n';
+    const text = await res.text();
+    out.textContent += text.slice(0, 20000);
+  } catch (e) {
+    out.textContent = 'Fetch error: ' + e.message;
+  }
+});
+
+document.getElementById('clear').addEventListener('click', () => {
+  out.textContent = '';
+  frame.src = 'about:blank';
+  frame.style.display = 'none';
+});
+
+registerSW();
+</script>
+</body>
+</html>
